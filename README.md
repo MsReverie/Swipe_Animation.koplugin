@@ -1,4 +1,4 @@
-[简体中文](./README%20_zh.md) | **English**
+[简体中文](./README_zh.md) | **English**
 
 # Swipe_Animation
 
