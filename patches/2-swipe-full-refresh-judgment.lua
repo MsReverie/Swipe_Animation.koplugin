@@ -65,11 +65,19 @@ function SwipeFullRefresh.shouldForceFullAfterAnimation(self, prev_page)
         return false
     end
 
-    -- ===== Images =====
+    -- ===== Images(ReaderView:paintTo) =====
     local view = instance.view
-    if view and view.img_coverage and view.img_coverage >= 0.075 then
-        if G_reader_settings:nilOrTrue("refresh_on_pages_with_images") then
-            return true
+    if view then
+        local curr_coverage = view.img_coverage or 0
+        local prev_coverage = view._swipe_prev_img_coverage or 0
+        local coverage_diff = math.abs(curr_coverage - prev_coverage)
+
+        view._swipe_prev_img_coverage = curr_coverage
+
+        if curr_coverage >= 0.075 or coverage_diff >= 0.075 then
+            if G_reader_settings:nilOrTrue("refresh_on_pages_with_images") then
+                return true
+            end
         end
     end
 
