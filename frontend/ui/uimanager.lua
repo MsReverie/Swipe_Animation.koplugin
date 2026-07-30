@@ -1308,45 +1308,55 @@ function UIManager:_repaint()
         local screen_w = Screen.bb:getWidth()
         local screen_h = Screen.bb:getHeight()
 
-        -- Independent full refresh counter (moved up so we can skip the animation
-        -- entirely when a clearing refresh is due). Required because we bypassed
-        -- the normal partial→full promotion counting in this software animation path.
-        -- Periodically triggers a full/partial screen refresh according to the user's
-        -- FULL_REFRESH_COUNT setting (from E-ink options) to reduce ghosting.
-        local do_clearing = false
-        if self.FULL_REFRESH_COUNT and self.FULL_REFRESH_COUNT > 0 then
-            self._swipe_full_refresh_count = (self._swipe_full_refresh_count or 0) + 1
-            if self._swipe_full_refresh_count >= self.FULL_REFRESH_COUNT then
-                do_clearing = true
-                self._swipe_full_refresh_count = 0
+        -- Try to capture the previous page number before the animation decision
+        -- Note: by the time we reach _repaint, paging/toc may already reflect the new page,
+        -- so prev_page is not 100% reliable, but it is still better than not passing it
+        -- and letting shouldForceFull fall back to toc.pageno.
+        local prev_page = nil
+        do
+            local readerui = require("apps/reader/readerui")
+            local instance = readerui and readerui.instance
+            if instance then
+                if instance.toc then
+                    prev_page = instance.toc.pageno
+                end
+                if not prev_page then
+                    prev_page = (instance.paging and instance.paging.current_page)
+                             or (instance.rolling and instance.rolling.current_page)
+                end
             end
+        end
+
+        -- ========== Full-refresh decision (early: skip the wipe animation
+        -- when a clearing or forced full refresh is needed) ==========
+        local do_clearing = SwipeFullRefresh.shouldDoClearing(self)
+        local need_force_full = false
+        if not do_clearing then
+            need_force_full = SwipeFullRefresh.shouldForceFullAfterAnimation(self, prev_page)
         end
 
         local saved_bb = Screen.saved_bb
         Screen.saved_bb = nil
 
-        if do_clearing then
-            -- Clearing page: skip the wipe animation and just issue the selected
-            -- refresh mode. When "mild global refresh" is enabled we use partial,
-            -- otherwise a true full refresh.
-            if G_reader_settings:isTrue("swipe_animation_mild_global_refresh") then
-                Screen:refreshPartial(0, 0, screen_w, screen_h)
+        if do_clearing or need_force_full then
+            -- Clearing page / image page / chapter boundary:
+            -- skip the animation and perform the corresponding refresh directly
+            if need_force_full then
+                SwipeFullRefresh.forceFullAndReset(self, screen_w, screen_h)
             else
-                Screen:refreshFull(0, 0, screen_w, screen_h)
+                SwipeFullRefresh.performClearing(self, screen_w, screen_h)
             end
             if saved_bb then
                 saved_bb:free()
             end
-            self._refresh_stack = {}
-            self.refresh_count = 0
         elseif saved_bb then
             -- ==================== Normal software swipe animation path ====================
             local new_bb = Screen.bb:copy()
 
             -- Support custom per-orientation animation frame delay set by the external plugin.
             -- Default animation frame delays (used when no custom value is set by user):
-            --   Landscape: 10ms
-            --   Portrait:  20ms
+            -- Landscape: 10ms
+            -- Portrait: 20ms
             local is_landscape = screen_w > screen_h
             local delay_ms = is_landscape
                 and (tonumber(G_reader_settings:readSetting("swipe_animation_delay_ms_horizontal")) or 0)
@@ -1357,7 +1367,6 @@ function UIManager:_repaint()
             local delay_us = delay_ms * 1000
 
             -- Allow user to choose "ui" or "fast" for the per-strip refreshes.
-            -- This trades off between visual quality / ghosting and animation fluidity.
             local anim_refresh_mode = G_reader_settings:readSetting("swipe_animation_refresh_mode") or "ui"
             local refresh_fn = refresh_methods[anim_refresh_mode] or refresh_methods.ui or Screen.refreshUI
 
@@ -1373,8 +1382,6 @@ function UIManager:_repaint()
             Screen.bb:blitFrom(saved_bb, 0, 0, 0, 0, screen_w, screen_h)
 
             -- Animate page turn by progressively revealing vertical strips of the new page.
-            -- NOTE: swipe_forward direction logic is essential (not redundant) for correct
-            -- visual effect on forward vs backward page turns and cannot be removed.
             for i = 1, steps do
                 local progress = i / steps
                 local dx = math.floor(screen_w * progress)
@@ -1386,67 +1393,22 @@ function UIManager:_repaint()
                     refresh_fn(Screen, strip_x, 0, strip_w, screen_h)
                 end
                 prev_dx = dx
-				-- Skip sleep on the last frame 
+
+                -- Skip sleep on the last frame
                 if i < steps and usleep then
                     usleep(delay_us)
                 end
             end
-			
-            -- ==================== Restore original KOReader full-refresh behavior ====================
-            -- The software animation path bypasses the normal partial→full promotion logic.
-            -- Re-apply the original conditions that force a full refresh on:
-            --   1. pages with significant image coverage (refresh_on_pages_with_images)
-            --   2. chapter boundaries (refresh_on_chapter_boundaries / FULL_REFRESH_COUNT == -1)
-            local need_full = false
-            local readerui = require("apps/reader/readerui")
-            local instance = readerui and readerui.instance
 
-            if instance then
-                -- Image pages: mirror the exact check performed in ReaderView:paintTo
-                local view = instance.view
-                if view and view.img_coverage and view.img_coverage >= 0.075 then
-                    if G_reader_settings:nilOrTrue("refresh_on_pages_with_images") then
-                        need_full = true
-                    end
-                end
-
-                -- Chapter boundaries
-                if not need_full then
-                    local flash_on_chapter = G_reader_settings:isTrue("refresh_on_chapter_boundaries")
-                    -- Also honor the "Every chapter" setting (FULL_REFRESH_COUNT == -1)
-                    if not flash_on_chapter and self.FULL_REFRESH_COUNT == -1 then
-                        flash_on_chapter = true
-                    end
-
-                    if flash_on_chapter then
-                        local toc = instance.toc
-                        local paging = instance.paging
-                        local current_page = paging and paging.current_page
-
-                        if toc and current_page and toc:isChapterStart(current_page) then
-                            -- Honor the original "except on the second page of a new chapter" option
-                            local no_second = G_reader_settings:isTrue("no_refresh_on_second_chapter_page")
-                            if not (no_second and current_page > 1 and toc:isChapterStart(current_page - 1)) then
-                                need_full = true
-                            end
-                        end
-                    end
-                end
-            end
-
-            if need_full then
-                Screen:refreshFull(0, 0, screen_w, screen_h)
-                -- Reset counters to stay consistent with normal full-refresh behavior
-                self._swipe_full_refresh_count = 0
-                self.refresh_count = 0
-            end
+            -- Forced-full decision is no longer performed here on the animation path
+            -- (it was moved earlier; if needed, the animation is skipped entirely)
 
             self._refresh_stack = {}
             new_bb:free()
             saved_bb:free()
         end
     end
-    
+
     -- execute refreshes:
     for _, refresh in ipairs(self._refresh_stack) do
         -- Honor dithering hints from *anywhere* in the dirty stack
