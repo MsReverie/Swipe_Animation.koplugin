@@ -10,6 +10,29 @@ local ok, err = pcall(function()
         return true
     end
 
+    if not G_reader_settings._swipe_animation_nil_means_on then
+        G_reader_settings._swipe_animation_nil_means_on = true
+        local orig_isTrue = G_reader_settings.isTrue
+        function G_reader_settings:isTrue(key)
+            if key == "swipe_animations" then
+                return self:readSetting(key) ~= false
+            end
+            return orig_isTrue(self, key)
+        end
+        local orig_flipNilOrFalse = G_reader_settings.flipNilOrFalse
+        function G_reader_settings:flipNilOrFalse(key)
+            if key == "swipe_animations" then
+                if self:readSetting(key) == false then
+                    self:saveSetting(key, true)
+                else
+                    self:saveSetting(key, false)
+                end
+                return self
+            end
+            return orig_flipNilOrFalse(self, key)
+        end
+    end
+
     local ReaderMenu = require("apps/reader/modules/readermenu")
     local reader_menu_order = require("ui/elements/reader_menu_order")
     local Screen = Device.screen
