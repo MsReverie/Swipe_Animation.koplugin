@@ -34,7 +34,11 @@ Starting from **V4.0**, this plugin no longer depends on or modifies `ffi/frameb
 
 ## Installation
 
-> **Important:** Back up your `koreader` directory before installing.
+> **Important:** Before installation，
+> 
+> 1. please confirm that your KOReader version is 2026.07.1 or later.
+>
+> 2. Back up your `koreader` directory.
 
 ### Kindle / Kobo (Linux Version)
 
